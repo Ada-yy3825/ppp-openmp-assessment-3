@@ -1,0 +1,76 @@
+#!/bin/bash
+#PBS -N a3_stencil
+#PBS -l walltime=00:30:00
+#PBS -l select=1:ncpus=128:mem=400gb:cpu_type=rome:mpiprocs=1:ompthreads=128
+#PBS -l place=excl
+
+# A3 perf: core stencil at the canonical thread ladder, plus the chosen
+# extension (read from EXTENSION.md "chosen:" field).
+
+set -euo pipefail
+
+module purge
+module load tools/prod GCC/13.3.0 CMake Python numactl
+
+export PATH="$HOME/.cargo/bin:$PATH"
+command -v hyperfine >/dev/null 2>&1 || { echo "hyperfine not on PATH"; exit 1; }
+
+cd "$PBS_O_WORKDIR"
+
+rm -rf build
+export CC=gcc CXX=g++
+export CXXFLAGS="-O3 -march=znver2 -mavx2 -fopenmp -Wall -Wextra"
+cmake -S . -B build
+cmake --build build --target stencil -j
+
+# Parse the chosen extension.
+chosen=""
+if [ -f EXTENSION.md ]; then
+    chosen=$(grep -E '^chosen:' EXTENSION.md | head -1 | awk '{print $2}' | tr -d ' ')
+fi
+case "$chosen" in
+    numa_first_touch|false_sharing|simd) : ;;
+    *) chosen="" ;;
+esac
+
+if [ -n "$chosen" ]; then
+    echo "Building extension: $chosen"
+    cmake --build build -j 2>&1 | tail -5 || true
+fi
+
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
+
+echo '{"results": [' > perf-results-a3.json
+first=1
+
+# Core.
+for p in 1 16 64 128; do
+    echo "=== A3 core @ $p threads ==="
+    OMP_NUM_THREADS=$p hyperfine --warmup 1 --min-runs 3 \
+        --export-json "stencil-$p.json" \
+        "./build/stencil"
+    tmin=$(python3 bin/hyperfine_min_time.py "stencil-$p.json")
+    [ $first -eq 0 ] && echo ',' >> perf-results-a3.json || first=0
+    printf '  {"thread_count": %d, "stage": "core", "time_s": %s}' "$p" "$tmin" >> perf-results-a3.json
+done
+
+# Extension — only at 128T (the "before vs after" comparison; both variants
+# of the chosen extension live in build/ext_<name>_*).
+if [ -n "$chosen" ]; then
+    for binary in build/ext_${chosen}_*; do
+        [ -x "$binary" ] || continue
+        label=$(basename "$binary")
+        echo "=== A3 $label @ 128 threads ==="
+        OMP_NUM_THREADS=128 hyperfine --warmup 1 --min-runs 3 \
+            --export-json "${label}-128.json" \
+            "./$binary"
+        tmin=$(python3 bin/hyperfine_min_time.py "${label}-128.json")
+        [ $first -eq 0 ] && echo ',' >> perf-results-a3.json || first=0
+        printf '  {"thread_count": 128, "stage": "ext_%s", "binary": "%s", "time_s": %s}' \
+            "$chosen" "$label" "$tmin" >> perf-results-a3.json
+    done
+fi
+echo ']}' >> perf-results-a3.json
+
+echo "✅ A3 benchmark complete — see perf-results-a3.json"

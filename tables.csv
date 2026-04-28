@@ -1,0 +1,6 @@
+thread_count,stage,measured_time_s,measured_speedup,measured_efficiency,measured_bandwidth_GBs,measured_roofline_fraction
+1,core,,1.00,1.00,,
+16,core,,,,,
+64,core,,,,,
+128,core,,,,,
+128,extension,,,,,

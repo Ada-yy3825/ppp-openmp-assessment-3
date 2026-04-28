@@ -1,0 +1,26 @@
+---
+# Shared style for ppp-openmp lectures + ppp-openmp-assessment.
+# Based on LLVM with a handful of deliberate choices.
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterClass: true
+  AfterStruct: true
+  AfterControlStatement: Never
+
+IncludeBlocks: Preserve
+PointerAlignment: Left
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SortIncludes: CaseSensitive
+Standard: c++20

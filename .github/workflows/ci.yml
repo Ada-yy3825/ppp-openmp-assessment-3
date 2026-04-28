@@ -1,0 +1,363 @@
+name: CI — Assignment 3 (3D Jacobi stencil + extension)
+
+on: [push, pull_request]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Static analysis & style — clang-format, clang-tidy, cppcheck.
+  # ─────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Static analysis & style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 20 toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg software-properties-common lsb-release
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] \
+          http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" \
+          | sudo tee /etc/apt/sources.list.d/llvm-toolchain.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-format-20 clang-tidy-20 cppcheck libomp-20-dev build-essential
+
+      - name: Configure & build (for compile_commands.json)
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_CXX_STANDARD=20
+          cmake --build build -j$(nproc)
+
+      - name: clang-tidy
+        run: |
+          set -o pipefail
+          clang-tidy-20 -p build $(git ls-files '*.cpp' '*.c') \
+            -- -I/usr/lib/llvm-20/include 2>&1 | tee clang-tidy.txt
+
+      - name: cppcheck
+        run: |
+          set -o pipefail
+          cppcheck --enable=performance,warning,style --quiet \
+            --project=build/compile_commands.json 2>&1 | tee cppcheck.txt
+
+      - name: clang-format
+        run: |
+          set -o pipefail
+          clang-format-20 --dry-run --Werror $(git ls-files '*.cpp' '*.h') 2>&1 | tee clang-format.txt
+
+      - name: Collect & upload untracked files
+        if: always()
+        uses: ./.github/actions/collect-untracked
+        with:
+          artifact-name: lint-logs
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build & unit tests under ThreadSanitizer + Archer OMPT (Clang 18).
+  # Builds the core stencil and (if EXTENSION.md picks one) the chosen
+  # extension targets, then exercises them at small thread counts.
+  # ─────────────────────────────────────────────────────────────────────────
+  correctness:
+    name: Build & TSan correctness (core + chosen extension)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    env:
+      CC:  clang
+      CXX: clang++
+
+      CFLAGS:   "-fsanitize=thread -g -fno-omit-frame-pointer"
+      CXXFLAGS: "-fsanitize=thread -g -fno-omit-frame-pointer"
+      LDFLAGS:  "-fsanitize=thread"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Python requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Clang/LLVM 18 toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install --no-install-recommends \
+              clang-18 clang++-18 lld-18 llvm-18-dev libomp-18-dev llvm-18-runtime
+          sudo update-alternatives --install /usr/bin/clang           clang           /usr/bin/clang-18           100
+          sudo update-alternatives --install /usr/bin/clang++         clang++         /usr/bin/clang++-18         100
+          sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-18 100
+
+      - name: Parse EXTENSION.md for chosen extension
+        id: ext
+        run: |
+          if [ -f EXTENSION.md ]; then
+            chosen=$(grep -E '^chosen:' EXTENSION.md | head -1 | awk '{print $2}' | tr -d ' ')
+          else
+            chosen=""
+          fi
+          case "$chosen" in
+            numa_first_touch|false_sharing|simd)
+              echo "chosen=$chosen" >> "$GITHUB_OUTPUT"
+              echo "Extension chosen: $chosen"
+              ;;
+            *)
+              echo "chosen=" >> "$GITHUB_OUTPUT"
+              echo "⚠️  No valid 'chosen:' in EXTENSION.md — core only."
+              ;;
+          esac
+
+      - name: Configure with CMake (Clang + TSan)
+        run: |
+          cmake -B build -S . \
+                -DCMAKE_C_COMPILER="$CC" \
+                -DCMAKE_CXX_COMPILER="$CXX" \
+                -DCMAKE_C_FLAGS="$CFLAGS" \
+                -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+                -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS"
+
+      - name: Build core stencil target
+        run: cmake --build build --target stencil --parallel
+
+      - name: Build extension targets (if any)
+        if: steps.ext.outputs.chosen != ''
+        run: |
+          cmake --build build -j 2>&1 | tee ext-build.log || true
+          ls build | grep "^ext_${{ steps.ext.outputs.chosen }}_" || echo "No extension binaries found"
+
+      - name: Run correctness + TSan on core
+        run: |
+          LLVM_LIBDIR=$(llvm-config-18 --libdir)
+          export LD_LIBRARY_PATH="$LLVM_LIBDIR:$LD_LIBRARY_PATH"
+          export OMP_TOOL=enabled
+          export OMP_TOOL_LIBRARIES="$LLVM_LIBDIR/libarcher.so"
+          export TSAN_OPTIONS="halt_on_error=1:external_symbolizer_path=$(which llvm-symbolizer):symbolize=0:ignore_noninstrumented_modules=1"
+
+          for i in 1 2 4 8 16; do
+              log="output-core-${i}.txt"
+              OMP_NUM_THREADS="$i" build/stencil 2>&1 | tee -a "$log"
+
+              if grep -qE '^(WARNING|ERROR): ThreadSanitizer' "$log"; then
+                echo "❌ TSan issue in core output-${i}" | tee -a correctness.log
+                exit 1
+              fi
+
+              if python3 bin/smart_diff.py "$log" expected_output.txt; then
+                  echo "Stencil-${i}: pass" | tee -a correctness.log
+              else
+                  echo "Stencil-${i}: fail" | tee -a correctness.log
+                  diff "$log" expected_output.txt | tee -a correctness.log
+                  exit 1
+              fi
+          done
+          echo "✅ Core passes at all thread counts."
+
+      - name: Run extension correctness (if chosen)
+        if: steps.ext.outputs.chosen != ''
+        run: |
+          LLVM_LIBDIR=$(llvm-config-18 --libdir)
+          export LD_LIBRARY_PATH="$LLVM_LIBDIR:$LD_LIBRARY_PATH"
+          export OMP_TOOL=enabled
+          export OMP_TOOL_LIBRARIES="$LLVM_LIBDIR/libarcher.so"
+          export TSAN_OPTIONS="halt_on_error=1"
+
+          for binary in $(ls build/ext_${{ steps.ext.outputs.chosen }}_* 2>/dev/null); do
+            name=$(basename "$binary")
+            for i in 1 4 8; do
+              log="output-${name}-${i}.txt"
+              OMP_NUM_THREADS="$i" "./$binary" 2>&1 | tee -a "$log"
+
+              if grep -qE '^(WARNING|ERROR): ThreadSanitizer' "$log"; then
+                echo "❌ TSan issue in ext ${name} @ ${i}T" | tee -a correctness.log
+                exit 1
+              fi
+
+              if python3 bin/smart_diff.py "$log" expected_output.txt; then
+                  echo "${name}-${i}: pass" | tee -a correctness.log
+              else
+                  echo "${name}-${i}: fail" | tee -a correctness.log
+                  exit 1
+              fi
+            done
+          done
+
+      - name: Collect & upload untracked files
+        if: always()
+        uses: ./.github/actions/collect-untracked
+        with:
+          artifact-name: correctness-logs
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # REFLECTION.md format check — required headers + ≥ 50-word sections.
+  # A3 has five Sections (core + extension) plus a Reasoning question.
+  # ─────────────────────────────────────────────────────────────────────────
+  reflection-format:
+    name: REFLECTION.md format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run REFLECTION format check
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          REQUIRED = [
+              "Section 1", "Section 2", "Section 3", "Section 4",
+              "Section 5", "Reasoning question",
+          ]
+          MIN_WORDS = 50
+
+          path = "REFLECTION.md"
+          p = Path(path)
+          if not p.exists():
+              print(f"❌ {path}: file missing")
+              sys.exit(1)
+
+          text = p.read_text()
+          parts = re.split(r"^##\s+", text, flags=re.MULTILINE)
+          section_texts = parts[1:]
+          section_titles = [s.split("\n", 1)[0].strip() for s in section_texts]
+
+          fail = False
+          for required in REQUIRED:
+              if not any(t.startswith(required) for t in section_titles):
+                  print(f"❌ {path}: missing header '## {required}'")
+                  fail = True
+
+          for body, title in zip(section_texts, section_titles):
+              body = body.split("\n", 1)[1] if "\n" in body else ""
+              body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+              words = body.split()
+              if title.startswith("Section") and len(words) < MIN_WORDS:
+                  print(
+                      f"❌ {path} :: ## {title} :: {len(words)} words "
+                      f"(need ≥ {MIN_WORDS})"
+                  )
+                  fail = True
+
+          if fail:
+              print()
+              print("REFLECTION format check failed. This is a formative")
+              print("workflow — fix the diagnostics above and re-push. No")
+              print("marks are awarded by this workflow; it surfaces format")
+              print("issues so you can iterate.")
+              sys.exit(1)
+          print("✅ REFLECTION format check passed.")
+          PY
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Language check — flag non-English content in *.md and C++ comments.
+  # ─────────────────────────────────────────────────────────────────────────
+  language-check:
+    name: Language check (English only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install langdetect
+        run: |
+          python -m pip install --upgrade pip
+          pip install langdetect
+
+      - name: Run language detector
+        run: python .github/scripts/check_language.py | tee -a check-language.log
+
+      - name: Collect & upload untracked files
+        if: always()
+        uses: ./.github/actions/collect-untracked
+        with:
+          artifact-name: check-language-logs
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Generated-files check — fail if build artifacts or executables are
+  # committed.
+  # ─────────────────────────────────────────────────────────────────────────
+  generated-files-check:
+    name: Prevent committing build artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if generated files or executables are present
+        shell: bash
+        run: |
+          regex='(
+            \.o$|\.obj$|
+            \.exe$|\.dll$|\.so$|\.dylib$|\.a$|\.lib$|\.pdb$|
+            Makefile$|^makefile$|
+            CMakeCache\.txt$|
+            cmake_install\.cmake$|
+            ^CMakeFiles/|
+            ^build/
+          )'
+
+          is_executable () {
+            local mime
+            mime=$(file -b --mime-type "$1")
+            case "$mime" in
+              application/x-executable*|\
+              application/x-pie-executable*|\
+              application/x-sharedlib*|\
+              application/x-dosexec*|\
+              application/x-mach-binary*)
+                return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          file_list=$(git ls-files)
+          offenders=()
+
+          while IFS= read -r f; do
+            [[ -e "$f" ]] || continue
+            [[ -d "$f" ]] && continue
+            if [[ "$f" =~ $regex ]]; then
+              offenders+=("$f")
+              continue
+            fi
+            if is_executable "$f"; then
+              offenders+=("$f")
+            fi
+          done <<<"$file_list"
+
+          if (( ${#offenders[@]} )); then
+            echo "Checking for generated/binary files: fail" | tee -a check-generated-files.log
+            echo "::error::The following generated/binary artifacts are committed:"
+            printf '%s\n' "${offenders[@]}"
+            exit 1
+          else
+            echo "Checking for generated/binary files: pass" | tee -a check-generated-files.log
+            echo "✅ No generated artifacts or binaries detected."
+          fi
+
+      - name: Collect & upload untracked files
+        if: always()
+        uses: ./.github/actions/collect-untracked
+        with:
+          artifact-name: generated-files-logs

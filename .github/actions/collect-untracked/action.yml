@@ -1,0 +1,35 @@
+name: Collect untracked files
+description: |
+  Gather every file that is not tracked by Git and
+  upload them as a single artifact.
+
+inputs:
+  artifact-name:
+    description: Name to give the uploaded artifact
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Collect untracked files
+      shell: bash
+      run: |
+        # List all untracked paths (NUL-delimited keeps odd filenames safe)
+        git ls-files --others --exclude-standard -z > .untracked.list
+
+        if [ ! -s .untracked.list ]; then
+          echo "🛈 No untracked files to archive."
+          exit 0       # nothing to upload; exit successfully
+        fi
+
+        # Copy them (keeping directory structure) into a temp dir
+        mkdir -p artifacts/untracked
+        xargs -0 -I{} cp --parents "{}" artifacts/untracked < .untracked.list
+
+    - name: Upload untracked files
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: artifacts/untracked
+        if-no-files-found: warn
+
