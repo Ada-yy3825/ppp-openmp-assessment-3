@@ -46,7 +46,11 @@ jobs:
       - name: cppcheck
         run: |
           set -o pipefail
+          # `--error-exitcode=1` makes cppcheck *fail the step* on any
+          # finding rather than silently exit 0 with diagnostics on
+          # stdout (which produces a green badge for buggy code).
           cppcheck --enable=performance,warning,style --quiet \
+            --error-exitcode=1 \
             --project=build/compile_commands.json 2>&1 | tee cppcheck.txt
 
       - name: clang-format
@@ -134,8 +138,12 @@ jobs:
       - name: Build extension targets (if any)
         if: steps.ext.outputs.chosen != ''
         run: |
-          cmake --build build -j 2>&1 | tee ext-build.log || true
-          ls build | grep "^ext_${{ steps.ext.outputs.chosen }}_" || echo "No extension binaries found"
+          # No `|| true` — if the chosen extension fails to build, the
+          # student needs to know. The `if:` gate above already skips
+          # this step when EXTENSION.md hasn't picked anything.
+          cmake --build build -j 2>&1 | tee ext-build.log
+          ls build | grep "^ext_${{ steps.ext.outputs.chosen }}_" \
+            || { echo "::error::No extension binaries found for chosen=${{ steps.ext.outputs.chosen }}"; exit 1; }
 
       - name: Run correctness + TSan on core
         run: |
