@@ -150,15 +150,15 @@ jobs:
               OMP_NUM_THREADS="$i" build/stencil 2>&1 | tee -a "$log"
 
               if grep -qE '^(WARNING|ERROR): ThreadSanitizer' "$log"; then
-                echo "❌ TSan issue in core output-${i}" | tee -a correctness.log
+                echo "❌ TSan issue in core output-${i}" | tee -a correctness-a3.log
                 exit 1
               fi
 
               if python3 bin/smart_diff.py "$log" expected_output.txt; then
-                  echo "Stencil-${i}: pass" | tee -a correctness.log
+                  echo "Stencil-${i}: pass" | tee -a correctness-a3.log
               else
-                  echo "Stencil-${i}: fail" | tee -a correctness.log
-                  diff "$log" expected_output.txt | tee -a correctness.log
+                  echo "Stencil-${i}: fail" | tee -a correctness-a3.log
+                  diff "$log" expected_output.txt | tee -a correctness-a3.log
                   exit 1
               fi
           done
@@ -180,14 +180,14 @@ jobs:
               OMP_NUM_THREADS="$i" "./$binary" 2>&1 | tee -a "$log"
 
               if grep -qE '^(WARNING|ERROR): ThreadSanitizer' "$log"; then
-                echo "❌ TSan issue in ext ${name} @ ${i}T" | tee -a correctness.log
+                echo "❌ TSan issue in ext ${name} @ ${i}T" | tee -a correctness-a3.log
                 exit 1
               fi
 
               if python3 bin/smart_diff.py "$log" expected_output.txt; then
-                  echo "${name}-${i}: pass" | tee -a correctness.log
+                  echo "${name}-${i}: pass" | tee -a correctness-a3.log
               else
-                  echo "${name}-${i}: fail" | tee -a correctness.log
+                  echo "${name}-${i}: fail" | tee -a correctness-a3.log
                   exit 1
               fi
             done
