@@ -43,7 +43,13 @@ if [ -n "$chosen" ]; then
     cmake --build build -j 2>&1 | tail -5 || true
 fi
 
-export OMP_PROC_BIND=close
+# A3 is bandwidth-bound. Use OMP_PROC_BIND=spread so undersubscribed
+# thread counts (T < 64) distribute across all 8 NUMA domains and
+# pull aggregate bandwidth from every DDR4 channel; with `close` they
+# would crowd into NUMA 0 and cap at one channel's ~30 GB/s. First-touch
+# is preserved either way (both bindings are static so thread N still
+# allocates its own pages). At T=128 the two bindings converge.
+export OMP_PROC_BIND=spread
 export OMP_PLACES=cores
 
 echo '{"results": [' > perf-results-a3.json
@@ -51,7 +57,7 @@ first=1
 
 # Core.
 for p in 1 16 64 128; do
-    echo "=== A3 core @ $p threads ==="
+    echo "=== A3 core @ $p threads (bind=spread) ==="
     OMP_NUM_THREADS=$p hyperfine --warmup 1 --min-runs 3 \
         --export-json "stencil-$p.json" \
         "./build/stencil"

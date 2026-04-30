@@ -47,6 +47,12 @@ Recommended toolchain:
 
 A3 is **memory-bound** (OI ≈ 0.14 FLOPs/byte). The grader compares your achieved bytes/s against measured STREAM bandwidth at the thread count you ran: 246.2 GB/s ceiling (32 threads, one-per-CCX recipe), 231.5 GB/s at 128 threads full-node, 116.0 GB/s on one socket. Graduated thresholds: 0.70 / 0.50 / 0.30 / 0.15 of measured STREAM. See `docs/outcomes.md` in the lectures repo for the full scale.
 
+### Thread placement
+
+Set `OMP_PROC_BIND=spread OMP_PLACES=cores` for the stencil. Rome has 8 NUMA domains, each with its own DDR4 channel (~30 GB/s). With `spread`, thread N+1 lands on a different NUMA domain than thread N, so undersubscribed runs draw from every channel in parallel; with `close`, threads pile into the lowest-numbered NUMA domain first and cap bandwidth at one channel until you reach T=16. The provided `evaluate.pbs` already sets this. First-touch correctness is preserved under either binding because both are static — thread N still allocates its own pages.
+
+**Full-node is not required for full credit.** With `spread`, the stencil saturates DDR4 bandwidth at T ≈ 16-32 (one or two threads per NUMA domain). T=32 with spread is within ~5 % of T=128 spread on the canonical reference, and at T=128 the kernel can actually *regress* due to barrier/memory-controller contention. If your roofline fraction at T=128 looks worse than at T=64, that's the saturation+contention curve, not a bug.
+
 ## Rubric (40 pts = 25 core + 15 extension)
 
 ### Core (25 pts)
