@@ -1,5 +1,5 @@
 ---
-chosen: numa_first_touch
+chosen:
 before_time_s: 0.00
 after_time_s: 0.00
 delta_percent: 0.0
