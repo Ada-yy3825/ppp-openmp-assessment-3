@@ -78,8 +78,11 @@ jobs:
       CC:  clang
       CXX: clang++
 
-      CFLAGS:   "-fsanitize=thread -g -fno-omit-frame-pointer"
-      CXXFLAGS: "-fsanitize=thread -g -fno-omit-frame-pointer"
+      # -O1 (matches the lectures-repo TSan harness): preserves frame
+      # pointers + source-line attribution while running noticeably
+      # faster than -O0; -O2/-O3 over-inline and hurt symbolisation.
+      CFLAGS:   "-fsanitize=thread -g -O1 -fno-omit-frame-pointer"
+      CXXFLAGS: "-fsanitize=thread -g -O1 -fno-omit-frame-pointer"
       LDFLAGS:  "-fsanitize=thread"
 
     steps:
@@ -151,26 +154,36 @@ jobs:
           export LD_LIBRARY_PATH="$LLVM_LIBDIR:$LD_LIBRARY_PATH"
           export OMP_TOOL=enabled
           export OMP_TOOL_LIBRARIES="$LLVM_LIBDIR/libarcher.so"
-          export TSAN_OPTIONS="halt_on_error=1:external_symbolizer_path=$(which llvm-symbolizer):symbolize=0:ignore_noninstrumented_modules=1"
+          # halt_on_error=1            : fail on first race
+          # second_deadlock_stack=1    : print both stacks of a deadlock pair
+          # history_size=7             : 2^7 events/thread (default 2^2) for richer post-mortems
+          # external_symbolizer_path=… : explicit path to llvm-symbolizer (robust against PATH drift)
+          # ignore_noninstrumented_modules=1 : silence races inside libstdc++ / libgomp / etc.
+          export TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:history_size=7:external_symbolizer_path=$(which llvm-symbolizer):ignore_noninstrumented_modules=1"
+          echo "TSAN_OPTIONS=$TSAN_OPTIONS"
 
+          # Each thread-count is exercised 3× to surface intermittent
+          # races whose appearance depends on thread-schedule timing.
           for i in 1 2 4 8 16; do
-              log="output-core-${i}.txt"
-              OMP_NUM_THREADS="$i" build/stencil 2>&1 | tee -a "$log"
+              for run in 1 2 3; do
+                  log="output-core-${i}-r${run}.txt"
+                  OMP_NUM_THREADS="$i" build/stencil 2>&1 | tee "$log"
 
-              if grep -qE '^(WARNING|ERROR): ThreadSanitizer' "$log"; then
-                echo "❌ TSan issue in core output-${i}" | tee -a correctness-a3.log
-                exit 1
-              fi
+                  if grep -qE '^(WARNING|ERROR): ThreadSanitizer' "$log"; then
+                    echo "❌ TSan issue in core output-${i}-r${run}" | tee -a correctness-a3.log
+                    exit 1
+                  fi
 
-              if python3 bin/smart_diff.py "$log" expected_output.txt; then
-                  echo "Stencil-${i}: pass" | tee -a correctness-a3.log
-              else
-                  echo "Stencil-${i}: fail" | tee -a correctness-a3.log
-                  diff "$log" expected_output.txt | tee -a correctness-a3.log
-                  exit 1
-              fi
+                  if python3 bin/smart_diff.py "$log" expected_output.txt; then
+                      echo "Stencil-${i}-r${run}: pass" | tee -a correctness-a3.log
+                  else
+                      echo "Stencil-${i}-r${run}: fail" | tee -a correctness-a3.log
+                      diff "$log" expected_output.txt | tee -a correctness-a3.log
+                      exit 1
+                  fi
+              done
           done
-          echo "✅ Core passes at all thread counts."
+          echo "✅ Core passes at all thread counts × 3 runs."
 
       - name: Run extension correctness (if chosen)
         if: steps.ext.outputs.chosen != ''
@@ -179,25 +192,30 @@ jobs:
           export LD_LIBRARY_PATH="$LLVM_LIBDIR:$LD_LIBRARY_PATH"
           export OMP_TOOL=enabled
           export OMP_TOOL_LIBRARIES="$LLVM_LIBDIR/libarcher.so"
-          export TSAN_OPTIONS="halt_on_error=1"
+          # Same TSAN_OPTIONS as the core lane — drift between the two
+          # lanes inside one CI file is fragile and serves no purpose.
+          export TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:history_size=7:external_symbolizer_path=$(which llvm-symbolizer):ignore_noninstrumented_modules=1"
+          echo "TSAN_OPTIONS=$TSAN_OPTIONS"
 
           for binary in $(ls build/ext_${{ steps.ext.outputs.chosen }}_* 2>/dev/null); do
             name=$(basename "$binary")
             for i in 1 4 8; do
-              log="output-${name}-${i}.txt"
-              OMP_NUM_THREADS="$i" "./$binary" 2>&1 | tee -a "$log"
+              for run in 1 2 3; do
+                  log="output-${name}-${i}-r${run}.txt"
+                  OMP_NUM_THREADS="$i" "./$binary" 2>&1 | tee "$log"
 
-              if grep -qE '^(WARNING|ERROR): ThreadSanitizer' "$log"; then
-                echo "❌ TSan issue in ext ${name} @ ${i}T" | tee -a correctness-a3.log
-                exit 1
-              fi
+                  if grep -qE '^(WARNING|ERROR): ThreadSanitizer' "$log"; then
+                    echo "❌ TSan issue in ext ${name} @ ${i}T r${run}" | tee -a correctness-a3.log
+                    exit 1
+                  fi
 
-              if python3 bin/smart_diff.py "$log" expected_output.txt; then
-                  echo "${name}-${i}: pass" | tee -a correctness-a3.log
-              else
-                  echo "${name}-${i}: fail" | tee -a correctness-a3.log
-                  exit 1
-              fi
+                  if python3 bin/smart_diff.py "$log" expected_output.txt; then
+                      echo "${name}-${i}-r${run}: pass" | tee -a correctness-a3.log
+                  else
+                      echo "${name}-${i}-r${run}: fail" | tee -a correctness-a3.log
+                      exit 1
+                  fi
+              done
             done
           done
 
