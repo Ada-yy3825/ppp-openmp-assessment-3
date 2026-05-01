@@ -34,9 +34,9 @@ void jacobi_step(const double* u, double* u_next)
 #pragma omp simd
             for (std::size_t k = 1; k < NZ - 1; ++k) {
                 u_next[idx(i, j, k)] =
-                    (u[idx(i - 1, j, k)] + u[idx(i + 1, j, k)] +
-                     u[idx(i, j - 1, k)] + u[idx(i, j + 1, k)] +
-                     u[idx(i, j, k - 1)] + u[idx(i, j, k + 1)]) / 6.0;
+                    (u[idx(i - 1, j, k)] + u[idx(i + 1, j, k)] + u[idx(i, j - 1, k)] +
+                     u[idx(i, j + 1, k)] + u[idx(i, j, k - 1)] + u[idx(i, j, k + 1)]) /
+                    6.0;
             }
         }
     }
@@ -79,16 +79,15 @@ int main()
     const std::size_t bytes = NX * NY * NZ * sizeof(double);
     void* a_raw = nullptr;
     void* b_raw = nullptr;
-    if (posix_memalign(&a_raw, 64, bytes) != 0 ||
-        posix_memalign(&b_raw, 64, bytes) != 0) {
+    if (posix_memalign(&a_raw, 64, bytes) != 0 || posix_memalign(&b_raw, 64, bytes) != 0) {
         std::fprintf(stderr, "posix_memalign failed\n");
         return 1;
     }
     auto* a = static_cast<double*>(a_raw);
     auto* b = static_cast<double*>(b_raw);
 
-    init(a);  // parallel first-touch init
-    init(b);  // parallel first-touch init for second buffer
+    init(a); // parallel first-touch init
+    init(b); // parallel first-touch init for second buffer
 
     for (int s = 0; s < NSTEPS; ++s) {
         jacobi_step(a, b);
