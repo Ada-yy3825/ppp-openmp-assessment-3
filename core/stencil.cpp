@@ -31,7 +31,6 @@ void jacobi_step(const double* u, double* u_next)
 #pragma omp parallel for collapse(2) default(none) shared(u, u_next) schedule(static)
     for (std::size_t i = 1; i < NX - 1; ++i) {
         for (std::size_t j = 1; j < NY - 1; ++j) {
-#pragma omp simd
             for (std::size_t k = 1; k < NZ - 1; ++k) {
                 u_next[idx(i, j, k)] =
                     (u[idx(i - 1, j, k)] + u[idx(i + 1, j, k)] + u[idx(i, j - 1, k)] +
