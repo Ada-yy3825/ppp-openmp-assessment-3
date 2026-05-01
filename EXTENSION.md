@@ -1,8 +1,8 @@
 ---
-chosen:
-before_time_s: 0.00
-after_time_s: 0.00
-delta_percent: 0.0
+chosen: numa_first_touch
+before_time_s:  18.659814450680003
+after_time_s: 1.937264186
+delta_percent: 89.62
 ---
 
 <!--
@@ -31,4 +31,6 @@ delta scores better than a falsified number (CI catches falsification at the cro
 
 Explain why you picked this extension for this kernel on Rome, and what the mechanism is.
 
-<!-- your rationale here -->
+I picked the NUMA first-touch extension because the 3D Jacobi stencil is memory-bound on Rome. Each update performs only a small amount of arithmetic compared with the amount of grid data it reads and writes, so memory placement has a large effect on performance. Rome has eight NUMA domains, and if the arrays are first initialised by one master thread, most pages are placed on one NUMA domain. During a 128-thread stencil sweep, many threads then access remote memory, which increases latency and reduces effective bandwidth.
+
+The extension changes the initialisation strategy. The naive version uses single-threaded initialisation, while the first-touch version uses a parallel OpenMP loop with static scheduling. Because Linux places each page on the NUMA node of the thread that first writes it, the parallel version distributes pages across NUMA domains. The compute loop then uses the same static traversal pattern, so threads tend to read and write pages close to where they were first touched.
