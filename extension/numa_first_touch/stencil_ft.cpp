@@ -13,7 +13,6 @@ inline std::size_t idx(std::size_t i, std::size_t j, std::size_t k)
 {
 
     return (i * NY * NZ) + (j * NZ) + k;
-
 }
 
 void jacobi_step(const double* u, double* u_next)
@@ -37,13 +36,9 @@ void jacobi_step(const double* u, double* u_next)
                      u[idx(i, j, k - 1)] + u[idx(i, j, k + 1)]) /
 
                     6.0;
-
             }
-
         }
-
     }
-
 }
 
 double checksum(const double* u)
@@ -55,11 +50,9 @@ double checksum(const double* u)
     for (std::size_t i = 0; i < NX * NY * NZ; ++i) {
 
         s += u[i];
-
     }
 
     return s;
-
 }
 
 static void init_first_touch(double* u)
@@ -71,7 +64,6 @@ static void init_first_touch(double* u)
     for (std::size_t i = 0; i < NX * NY * NZ; ++i) {
 
         u[i] = 0.0;
-
     }
 
 #pragma omp parallel for default(none) shared(u) schedule(static)
@@ -81,11 +73,8 @@ static void init_first_touch(double* u)
         for (std::size_t k = 0; k < NZ; ++k) {
 
             u[idx(0, j, k)] = 1.0;
-
         }
-
     }
-
 }
 
 int main()
@@ -105,7 +94,6 @@ int main()
         std::fprintf(stderr, "posix_memalign failed\n");
 
         return 1;
-
     }
 
     auto* a = static_cast<double*>(a_raw);
@@ -121,7 +109,6 @@ int main()
         jacobi_step(a, b);
 
         std::swap(a, b);
-
     }
 
     std::printf("checksum = %.6e\n", checksum(a));
@@ -131,5 +118,4 @@ int main()
     std::free(b);
 
     return 0;
-
 }
