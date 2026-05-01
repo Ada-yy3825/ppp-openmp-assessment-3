@@ -28,10 +28,10 @@ inline std::size_t idx(std::size_t i, std::size_t j, std::size_t k)
 
 void jacobi_step(const double* u, double* u_next)
 {
-    // TODO(student): parallelise with #pragma omp parallel for collapse(2).
-    // Starter is serial so the file builds on day 2.
+#pragma omp parallel for collapse(2) default(none) shared(u, u_next) schedule(static)
     for (std::size_t i = 1; i < NX - 1; ++i) {
         for (std::size_t j = 1; j < NY - 1; ++j) {
+#pragma omp simd
             for (std::size_t k = 1; k < NZ - 1; ++k) {
                 u_next[idx(i, j, k)] =
                     (u[idx(i - 1, j, k)] + u[idx(i + 1, j, k)] +
@@ -87,8 +87,8 @@ int main()
     auto* a = static_cast<double*>(a_raw);
     auto* b = static_cast<double*>(b_raw);
 
-    init(a);                              // parallel first-touch init.
-    std::memcpy(b, a, bytes);
+    init(a);  // parallel first-touch init
+    init(b);  // parallel first-touch init for second buffer
 
     for (int s = 0; s < NSTEPS; ++s) {
         jacobi_step(a, b);
